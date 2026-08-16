@@ -15,9 +15,8 @@ const firebaseConfig = {
 firebase.initializeApp(firebaseConfig);
 const db = firebase.database();
 
-console.log("Firebase initialized");
 db.ref(".info/connected").on("value", (snap) => {
-  console.log("Firebase connected:", snap.val());
+  console.log("%c Firebase connected: " + snap.val(), "color: lime; font-weight: bold");
 });
 
 // ======================
@@ -28,6 +27,7 @@ if (!playerId) {
   playerId = "p_" + Math.random().toString(36).slice(2, 10);
   localStorage.setItem("dnd_playerId", playerId);
 }
+console.log("My playerId:", playerId);
 
 let roomCode = null;
 let isDrawer = false;
@@ -36,38 +36,17 @@ let isDrawing = false;
 let lastX = 0, lastY = 0;
 let timerInterval = null;
 let ctx = null;
-let currentPoints = [];          // points of the stroke currently being drawn
-let finishedStrokes = [];        // local cache of completed strokes for redrawing
-let liveStrokeListener = null;
-let strokesListener = null;
-let clearListener = null;
+let currentStatus = "";
 
 const PROMPTS = [
-  "a big heart",
-  "two people holding hands",
-  "a slice of pizza",
-  "the New York skyline",
-  "a cup of tea or coffee",
-  "a cute cat",
-  "a flower",
-  "fireworks",
-  "a smiley face with hearts for eyes",
-  "a boat on water",
-  "the moon and stars",
-  "a pair of sunglasses",
-  "a birthday cake",
-  "a bicycle",
-  "an umbrella in the rain",
-  "a mountain",
-  "a guitar",
-  "ice cream cone",
-  "a palm tree",
-  "two interlocking rings",
-  "a rainbow",
-  "a rocket ship",
-  "a teddy bear",
-  "a camera",
-  "a hot air balloon"
+  "a big heart", "two people holding hands", "a slice of pizza",
+  "the New York skyline", "a cup of tea or coffee", "a cute cat",
+  "a flower", "fireworks", "a smiley face with hearts for eyes",
+  "a boat on water", "the moon and stars", "a pair of sunglasses",
+  "a birthday cake", "a bicycle", "an umbrella in the rain",
+  "a mountain", "a guitar", "ice cream cone", "a palm tree",
+  "two interlocking rings", "a rainbow", "a rocket ship",
+  "a teddy bear", "a camera", "a hot air balloon"
 ];
 
 const ROUND_SECONDS = 75;
@@ -117,9 +96,7 @@ function showScreen(name) {
 function generateRoomCode() {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   let code = "";
-  for (let i = 0; i < 6; i++) {
-    code += chars[Math.floor(Math.random() * chars.length)];
-  }
+  for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
   return code;
 }
 
@@ -133,69 +110,64 @@ function resizeCanvas() {
   const width = wrapper.clientWidth;
   const height = wrapper.clientHeight;
 
-  els.canvas.width = width * dpr;
-  els.canvas.height = height * dpr;
+  els.canvas.width = Math.floor(width * dpr);
+  els.canvas.height = Math.floor(height * dpr);
   els.canvas.style.width = width + "px";
   els.canvas.style.height = height + "px";
 
   ctx = els.canvas.getContext("2d");
+  ctx.setTransform(1, 0, 0, 1, 0, 0); // reset
   ctx.scale(dpr, dpr);
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
-
-  // Redraw everything after resize
-  redrawAll();
 }
 
 function getPos(e) {
   const rect = els.canvas.getBoundingClientRect();
-  let clientX, clientY;
-  if (e.touches && e.touches[0]) {
-    clientX = e.touches[0].clientX;
-    clientY = e.touches[0].clientY;
-  } else {
-    clientX = e.clientX;
-    clientY = e.clientY;
-  }
+  const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+  const clientY = e.touches ? e.touches[0].clientY : e.clientY;
   return {
     x: clientX - rect.left,
     y: clientY - rect.top
   };
 }
 
-function drawStroke(points, color, width) {
-  if (!ctx || !points || points.length < 2) return;
+function drawSegment(x0, y0, x1, y1, color, width) {
+  if (!ctx) return;
   ctx.strokeStyle = color || "#e91e63";
   ctx.lineWidth = width || 6;
   ctx.beginPath();
-  ctx.moveTo(points[0].x, points[0].y);
-  for (let i = 1; i < points.length; i++) {
-    ctx.lineTo(points[i].x, points[i].y);
-  }
+  ctx.moveTo(x0, y0);
+  ctx.lineTo(x1, y1);
   ctx.stroke();
 }
 
 function clearLocalCanvas() {
   if (!ctx) return;
   const dpr = window.devicePixelRatio || 1;
-  ctx.clearRect(0, 0, els.canvas.width / dpr, els.canvas.height / dpr);
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, els.canvas.width, els.canvas.height);
+  ctx.restore();
 }
 
-function redrawAll() {
-  clearLocalCanvas();
-  // Draw all finished strokes
-  finishedStrokes.forEach(s => {
-    drawStroke(s.points, s.color, s.width);
-  });
-}
-
-function withTimeout(promise, ms, errorMsg) {
+function withTimeout(promise, ms, msg) {
   return Promise.race([
     promise,
-    new Promise((_, reject) =>
-      setTimeout(() => reject(new Error(errorMsg)), ms)
-    )
+    new Promise((_, reject) => setTimeout(() => reject(new Error(msg)), ms))
   ]);
+}
+
+function updateDebug() {
+  // Small on-screen debug so we can see state without console
+  let debug = document.getElementById("debug-info");
+  if (!debug) {
+    debug = document.createElement("div");
+    debug.id = "debug-info";
+    debug.style.cssText = "position:fixed;bottom:4px;left:4px;background:rgba(0,0,0,0.75);color:#0f0;font:11px monospace;padding:4px 8px;border-radius:4px;z-index:9999;max-width:90vw;";
+    document.body.appendChild(debug);
+  }
+  debug.textContent = `status: ${currentStatus} | drawer: ${isDrawer} | me: ${playerId.slice(-4)}`;
 }
 
 // ======================
@@ -203,35 +175,26 @@ function withTimeout(promise, ms, errorMsg) {
 // ======================
 async function createRoom() {
   els.lobbyStatus.textContent = "Creating room…";
-  els.lobbyStatus.style.color = "";
   els.btnCreate.disabled = true;
-
   try {
     roomCode = generateRoomCode();
     roomRef = db.ref("rooms/" + roomCode);
-
-    await withTimeout(
-      roomRef.set({
-        createdAt: Date.now(),
-        players: {
-          [playerId]: { joinedAt: Date.now() }
-        },
-        status: "waiting",
-        prompt: null,
-        drawerId: null,
-        timerEnd: null
-      }),
-      8000,
-      "Timed out. Check database rules."
-    );
+    await withTimeout(roomRef.set({
+      createdAt: Date.now(),
+      players: { [playerId]: { joinedAt: Date.now() } },
+      status: "waiting",
+      prompt: null,
+      drawerId: null,
+      timerEnd: null
+    }), 8000, "Timeout creating room");
 
     els.roomCodeDisplay.textContent = roomCode;
     showScreen("waiting");
     listenToRoom();
   } catch (err) {
-    console.error("Create room failed:", err);
+    console.error(err);
     els.lobbyStatus.style.color = "#e57373";
-    els.lobbyStatus.innerHTML = "<strong>Error:</strong> " + (err.message || err.code);
+    els.lobbyStatus.textContent = "Error: " + err.message;
   } finally {
     els.btnCreate.disabled = false;
   }
@@ -240,64 +203,50 @@ async function createRoom() {
 async function joinRoom() {
   const code = els.joinCode.value.trim().toUpperCase();
   if (code.length < 4) {
-    els.lobbyStatus.textContent = "Please enter a valid code";
+    els.lobbyStatus.textContent = "Enter a valid code";
     return;
   }
-
   els.lobbyStatus.textContent = "Joining…";
-  els.lobbyStatus.style.color = "";
   els.btnJoin.disabled = true;
-
   try {
     roomCode = code;
     roomRef = db.ref("rooms/" + roomCode);
-
-    const snap = await withTimeout(roomRef.once("value"), 8000, "Timed out");
-
+    const snap = await withTimeout(roomRef.once("value"), 8000, "Timeout joining");
     if (!snap.exists()) {
       els.lobbyStatus.textContent = "Room not found";
       return;
     }
-
     const data = snap.val();
-    const playerCount = data.players ? Object.keys(data.players).length : 0;
-    if (playerCount >= 2 && !data.players[playerId]) {
-      els.lobbyStatus.textContent = "Room is full";
+    const count = data.players ? Object.keys(data.players).length : 0;
+    if (count >= 2 && !data.players[playerId]) {
+      els.lobbyStatus.textContent = "Room full";
       return;
     }
-
     await roomRef.child("players/" + playerId).set({ joinedAt: Date.now() });
-
     showScreen("waiting");
     els.roomCodeDisplay.textContent = roomCode;
     listenToRoom();
   } catch (err) {
-    console.error("Join failed:", err);
+    console.error(err);
     els.lobbyStatus.style.color = "#e57373";
-    els.lobbyStatus.innerHTML = "<strong>Error:</strong> " + (err.message || err.code);
+    els.lobbyStatus.textContent = "Error: " + err.message;
   } finally {
     els.btnJoin.disabled = false;
   }
 }
 
 function listenToRoom() {
-  if (!roomRef) return;
-
   roomRef.on("value", (snap) => {
     const data = snap.val();
-    if (!data) {
-      leaveRoom();
-      return;
-    }
+    if (!data) { leaveRoom(); return; }
 
-    const players = data.players || {};
-    const playerIds = Object.keys(players);
+    const playerIds = Object.keys(data.players || {});
     const bothJoined = playerIds.length >= 2;
 
     if (!screens.waiting.classList.contains("hidden")) {
       if (bothJoined) {
         els.waitingStatus.textContent = "Both connected! Starting…";
-        setTimeout(() => enterGame(data), 500);
+        setTimeout(() => enterGame(data), 400);
       } else {
         els.waitingStatus.textContent = "Waiting for someone to join…";
       }
@@ -313,29 +262,30 @@ function enterGame(data) {
 
   if (!data.drawerId) {
     const playerIds = Object.keys(data.players || {});
-    roomRef.update({
-      drawerId: playerIds[0],
-      status: "ready"
-    });
+    roomRef.update({ drawerId: playerIds[0], status: "ready" });
   }
 
   setupCanvas();
-  setupDrawingListeners();
+  setupSegmentListener();
   updateGameFromData(data);
 }
 
 function updateGameFromData(data) {
   if (!data) return;
 
+  currentStatus = data.status || "";
   isDrawer = data.drawerId === playerId;
+  updateDebug();
 
   els.roleBadge.textContent = isDrawer ? "You draw" : "You watch";
   els.roleBadge.className = "badge " + (isDrawer ? "drawer" : "watcher");
 
+  // Enable tools only for drawer during drawing phase
   const canDraw = isDrawer && data.status === "drawing";
   els.drawingTools.style.opacity = canDraw ? "1" : "0.4";
   els.drawingTools.style.pointerEvents = canDraw ? "auto" : "none";
 
+  // Prompt
   if (isDrawer && data.status === "drawing" && data.prompt) {
     els.promptBox.classList.remove("hidden");
     els.promptText.textContent = data.prompt;
@@ -343,6 +293,7 @@ function updateGameFromData(data) {
     els.promptBox.classList.add("hidden");
   }
 
+  // Reveal
   if (data.status === "reveal") {
     els.revealBox.classList.remove("hidden");
     els.revealText.textContent = data.prompt || "?";
@@ -364,17 +315,15 @@ function updateGameFromData(data) {
 
 function startLocalTimer(endTs) {
   stopLocalTimer();
-  function tick() {
+  const tick = () => {
     const left = Math.max(0, Math.ceil((endTs - Date.now()) / 1000));
     els.timer.textContent = left + "s";
     els.timer.classList.toggle("warning", left <= 10);
     if (left <= 0) {
       stopLocalTimer();
-      if (isDrawer) {
-        roomRef.update({ status: "reveal" });
-      }
+      if (isDrawer) roomRef.update({ status: "reveal" });
     }
-  }
+  };
   tick();
   timerInterval = setInterval(tick, 250);
 }
@@ -387,67 +336,38 @@ function stopLocalTimer() {
 }
 
 // ======================
-// Drawing listeners (the important fix)
+// Segment-based drawing (very reliable)
 // ======================
-function setupDrawingListeners() {
-  if (!roomRef) return;
-
-  // Clean previous listeners
-  if (liveStrokeListener) roomRef.child("liveStroke").off("value", liveStrokeListener);
-  if (strokesListener) roomRef.child("strokes").off("child_added", strokesListener);
-  if (clearListener) roomRef.child("clearAt").off("value", clearListener);
-
-  // 1. Live stroke (appears in real-time while the other person is drawing)
-  liveStrokeListener = roomRef.child("liveStroke").on("value", (snap) => {
-    const live = snap.val();
-    redrawAll(); // clear + draw finished strokes
-
-    if (live && live.points && live.points.length > 1) {
-      drawStroke(live.points, live.color, live.width);
+function setupSegmentListener() {
+  // Listen for new line segments from either player
+  roomRef.child("segments").on("child_added", (snap) => {
+    const seg = snap.val();
+    if (seg) {
+      drawSegment(seg.x0, seg.y0, seg.x1, seg.y1, seg.color, seg.width);
     }
   });
 
-  // 2. Finished strokes
-  finishedStrokes = [];
-  strokesListener = roomRef.child("strokes").on("child_added", (snap) => {
-    const stroke = snap.val();
-    if (stroke && stroke.points) {
-      finishedStrokes.push(stroke);
-      redrawAll();
-    }
-  });
-
-  // 3. Clear signal
-  clearListener = roomRef.child("clearAt").on("value", (snap) => {
-    if (snap.val()) {
-      finishedStrokes = [];
-      clearLocalCanvas();
-    }
+  // Clear signal
+  roomRef.child("clearAt").on("value", (snap) => {
+    if (snap.val()) clearLocalCanvas();
   });
 }
 
-// ======================
-// Round controls
-// ======================
 async function startRound() {
   if (!roomRef) return;
   try {
-    finishedStrokes = [];
     clearLocalCanvas();
-    await roomRef.child("strokes").remove();
-    await roomRef.child("liveStroke").remove();
+    await roomRef.child("segments").remove();
     await roomRef.child("clearAt").set(Date.now());
 
     const prompt = randomPrompt();
-    const timerEnd = Date.now() + ROUND_SECONDS * 1000;
-
     await roomRef.update({
       status: "drawing",
       prompt: prompt,
-      timerEnd: timerEnd
+      timerEnd: Date.now() + ROUND_SECONDS * 1000
     });
   } catch (err) {
-    console.error("Start round failed:", err);
+    console.error("startRound error", err);
   }
 }
 
@@ -461,10 +381,8 @@ async function swapRoles() {
     const playerIds = Object.keys(data.players || {});
     const other = playerIds.find(id => id !== data.drawerId) || playerIds[0];
 
-    finishedStrokes = [];
     clearLocalCanvas();
-    await roomRef.child("strokes").remove();
-    await roomRef.child("liveStroke").remove();
+    await roomRef.child("segments").remove();
 
     await roomRef.update({
       drawerId: other,
@@ -473,7 +391,7 @@ async function swapRoles() {
       timerEnd: null
     });
   } catch (err) {
-    console.error("Swap failed:", err);
+    console.error("swap error", err);
   }
 }
 
@@ -486,116 +404,95 @@ function leaveRoom() {
   roomRef = null;
   roomCode = null;
   isDrawer = false;
-  finishedStrokes = [];
+  currentStatus = "";
   showScreen("lobby");
   els.lobbyStatus.textContent = "";
-  els.lobbyStatus.style.color = "";
   els.joinCode.value = "";
+  const dbg = document.getElementById("debug-info");
+  if (dbg) dbg.remove();
 }
 
 // ======================
-// Drawing input
+// Pointer / Drawing
 // ======================
 function setupCanvas() {
   resizeCanvas();
   window.addEventListener("resize", resizeCanvas);
 
-  // Prevent adding listeners multiple times
-  els.canvas.onmousedown = onPointerDown;
-  els.canvas.onmousemove = onPointerMove;
-  window.onmouseup = onPointerUp;
+  // Use both mouse and touch with preventDefault
+  els.canvas.addEventListener("mousedown", handleStart);
+  els.canvas.addEventListener("mousemove", handleMove);
+  window.addEventListener("mouseup", handleEnd);
 
-  els.canvas.ontouchstart = (e) => { e.preventDefault(); onPointerDown(e); };
-  els.canvas.ontouchmove = (e) => { e.preventDefault(); onPointerMove(e); };
-  els.canvas.ontouchend = onPointerUp;
-  els.canvas.ontouchcancel = onPointerUp;
+  els.canvas.addEventListener("touchstart", handleStart, { passive: false });
+  els.canvas.addEventListener("touchmove", handleMove, { passive: false });
+  els.canvas.addEventListener("touchend", handleEnd);
+  els.canvas.addEventListener("touchcancel", handleEnd);
 }
 
-function onPointerDown(e) {
-  if (!isDrawer) return;
-  // Only allow drawing during "drawing" status
-  // (tools are already disabled, but extra safety)
+function handleStart(e) {
+  e.preventDefault();
+  console.log("pointer down – isDrawer:", isDrawer, "status:", currentStatus);
+
+  if (!isDrawer || currentStatus !== "drawing") {
+    console.log("Not allowed to draw right now");
+    return;
+  }
 
   isDrawing = true;
   const pos = getPos(e);
   lastX = pos.x;
   lastY = pos.y;
-  currentPoints = [{ x: Math.round(pos.x), y: Math.round(pos.y) }];
-
-  // Start live stroke
-  if (roomRef) {
-    roomRef.child("liveStroke").set({
-      color: els.colorPicker.value,
-      width: Number(els.brushSize.value),
-      points: currentPoints
-    });
-  }
 }
 
-function onPointerMove(e) {
+function handleMove(e) {
+  e.preventDefault();
   if (!isDrawing || !isDrawer) return;
 
   const pos = getPos(e);
-  const x = Math.round(pos.x);
-  const y = Math.round(pos.y);
+  const x = pos.x;
+  const y = pos.y;
 
-  // Draw locally immediately
-  drawStroke([ {x: lastX, y: lastY}, {x, y} ], els.colorPicker.value, Number(els.brushSize.value));
+  // Draw locally right away (feels instant)
+  drawSegment(lastX, lastY, x, y, els.colorPicker.value, Number(els.brushSize.value));
 
-  currentPoints.push({ x, y });
+  // Send the tiny segment to Firebase so the other person sees it
+  if (roomRef) {
+    roomRef.child("segments").push({
+      x0: Math.round(lastX),
+      y0: Math.round(lastY),
+      x1: Math.round(x),
+      y1: Math.round(y),
+      color: els.colorPicker.value,
+      width: Number(els.brushSize.value)
+    });
+  }
+
   lastX = x;
   lastY = y;
-
-  // Throttle Firebase writes a little (every 2-3 points is enough for smooth feel)
-  if (currentPoints.length % 2 === 0 && roomRef) {
-    roomRef.child("liveStroke").update({
-      points: currentPoints
-    });
-  }
 }
 
-function onPointerUp() {
-  if (!isDrawing) return;
+function handleEnd(e) {
   isDrawing = false;
-
-  if (currentPoints.length > 1 && roomRef) {
-    // Save finished stroke
-    const strokeId = "s_" + Date.now();
-    roomRef.child("strokes/" + strokeId).set({
-      color: els.colorPicker.value,
-      width: Number(els.brushSize.value),
-      points: currentPoints
-    });
-
-    // Clear the live stroke
-    roomRef.child("liveStroke").remove();
-  }
-
-  currentPoints = [];
 }
 
 els.btnClear.addEventListener("click", async () => {
   if (!isDrawer || !roomRef) return;
-  finishedStrokes = [];
   clearLocalCanvas();
-  await roomRef.child("strokes").remove();
-  await roomRef.child("liveStroke").remove();
+  await roomRef.child("segments").remove();
   await roomRef.child("clearAt").set(Date.now());
 });
 
 // ======================
-// Event listeners
+// Buttons
 // ======================
 els.btnCreate.addEventListener("click", createRoom);
 els.btnJoin.addEventListener("click", joinRoom);
-els.joinCode.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") joinRoom();
-});
+els.joinCode.addEventListener("keydown", e => { if (e.key === "Enter") joinRoom(); });
 els.btnLeaveWaiting.addEventListener("click", leaveRoom);
 els.btnLeaveGame.addEventListener("click", leaveRoom);
 els.btnStartRound.addEventListener("click", startRound);
 els.btnSwap.addEventListener("click", swapRoles);
-
 els.joinCode.addEventListener("input", () => {
   els.joinCode.value = els.joinCode.value.toUpperCase();
 });

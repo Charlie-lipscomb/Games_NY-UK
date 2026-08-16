@@ -4,7 +4,7 @@
 const firebaseConfig = {
   apiKey: "AIzaSyB19tVRkcTjgjHbsOa49LjPBmwRqoR65Vo",
   authDomain: "date-night-eb68a.firebaseapp.com",
-  databaseURL: "https://date-night-eb68a-default-rtdb.firebaseio.com", // update if your URL is different
+  databaseURL: "https://date-night-eb68a-default-rtdb.firebaseio.com", // <-- CHANGE THIS if needed
   projectId: "date-night-eb68a",
   storageBucket: "date-night-eb68a.firebasestorage.app",
   messagingSenderId: "1002805026528",
@@ -32,10 +32,9 @@ let currentStrokeId = null;
 let isDrawing = false;
 let lastX = 0, lastY = 0;
 let timerInterval = null;
-let canvas, ctx;
-let canvasRect = null;
+let ctx = null;
 
-// Fun visual prompts (couple / date-night friendly)
+// Fun visual prompts
 const PROMPTS = [
   "a big heart",
   "two people holding hands",
@@ -136,10 +135,6 @@ function resizeCanvas() {
   ctx.scale(dpr, dpr);
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
-
-  canvasRect = els.canvas.getBoundingClientRect();
-  // Redraw existing strokes after resize would require storing them locally.
-  // For simplicity we keep it simple — clear happens on new round anyway.
 }
 
 function getPos(e) {
@@ -159,6 +154,7 @@ function getPos(e) {
 }
 
 function drawLine(x0, y0, x1, y1, color, width) {
+  if (!ctx) return;
   ctx.strokeStyle = color;
   ctx.lineWidth = width;
   ctx.beginPath();
@@ -168,6 +164,7 @@ function drawLine(x0, y0, x1, y1, color, width) {
 }
 
 function clearLocalCanvas() {
+  if (!ctx) return;
   const dpr = window.devicePixelRatio || 1;
   ctx.clearRect(0, 0, els.canvas.width / dpr, els.canvas.height / dpr);
 }
@@ -177,23 +174,31 @@ function clearLocalCanvas() {
 // ======================
 async function createRoom() {
   els.lobbyStatus.textContent = "Creating room…";
-  roomCode = generateRoomCode();
+  els.lobbyStatus.style.color = "";
 
-  roomRef = db.ref("rooms/" + roomCode);
-  await roomRef.set({
-    createdAt: Date.now(),
-    players: {
-      [playerId]: { joinedAt: Date.now(), role: null }
-    },
-    status: "waiting",
-    prompt: null,
-    drawerId: null,
-    timerEnd: null
-  });
+  try {
+    roomCode = generateRoomCode();
+    roomRef = db.ref("rooms/" + roomCode);
 
-  els.roomCodeDisplay.textContent = roomCode;
-  showScreen("waiting");
-  listenToRoom();
+    await roomRef.set({
+      createdAt: Date.now(),
+      players: {
+        [playerId]: { joinedAt: Date.now(), role: null }
+      },
+      status: "waiting",
+      prompt: null,
+      drawerId: null,
+      timerEnd: null
+    });
+
+    els.roomCodeDisplay.textContent = roomCode;
+    showScreen("waiting");
+    listenToRoom();
+  } catch (err) {
+    console.error("Create room failed:", err);
+    els.lobbyStatus.style.color = "#e57373";
+    els.lobbyStatus.textContent = "Error: " + (err.message || err.code || "Could not create room. Check console (F12).");
+  }
 }
 
 async function joinRoom() {
@@ -204,30 +209,38 @@ async function joinRoom() {
   }
 
   els.lobbyStatus.textContent = "Joining…";
-  roomCode = code;
-  roomRef = db.ref("rooms/" + roomCode);
+  els.lobbyStatus.style.color = "";
 
-  const snap = await roomRef.once("value");
-  if (!snap.exists()) {
-    els.lobbyStatus.textContent = "Room not found";
-    return;
+  try {
+    roomCode = code;
+    roomRef = db.ref("rooms/" + roomCode);
+
+    const snap = await roomRef.once("value");
+    if (!snap.exists()) {
+      els.lobbyStatus.textContent = "Room not found";
+      return;
+    }
+
+    const data = snap.val();
+    const playerCount = data.players ? Object.keys(data.players).length : 0;
+    if (playerCount >= 2 && !data.players[playerId]) {
+      els.lobbyStatus.textContent = "Room is full";
+      return;
+    }
+
+    await roomRef.child("players/" + playerId).set({
+      joinedAt: Date.now(),
+      role: null
+    });
+
+    showScreen("waiting");
+    els.roomCodeDisplay.textContent = roomCode;
+    listenToRoom();
+  } catch (err) {
+    console.error("Join room failed:", err);
+    els.lobbyStatus.style.color = "#e57373";
+    els.lobbyStatus.textContent = "Error: " + (err.message || err.code || "Could not join room");
   }
-
-  const data = snap.val();
-  const playerCount = data.players ? Object.keys(data.players).length : 0;
-  if (playerCount >= 2 && !data.players[playerId]) {
-    els.lobbyStatus.textContent = "Room is full";
-    return;
-  }
-
-  await roomRef.child("players/" + playerId).set({
-    joinedAt: Date.now(),
-    role: null
-  });
-
-  showScreen("waiting");
-  els.roomCodeDisplay.textContent = roomCode;
-  listenToRoom();
 }
 
 function listenToRoom() {
@@ -244,19 +257,19 @@ function listenToRoom() {
     const playerIds = Object.keys(players);
     const bothJoined = playerIds.length >= 2;
 
-    if (screens.waiting.classList.contains("hidden") === false) {
-      // still on waiting screen
+    if (!screens.waiting.classList.contains("hidden")) {
       if (bothJoined) {
         els.waitingStatus.textContent = "Both connected! Starting…";
-        // Move to game after a short moment
         setTimeout(() => enterGame(data), 600);
       } else {
         els.waitingStatus.textContent = "Waiting for someone to join…";
       }
     } else {
-      // already in game — update state
       updateGameFromData(data);
     }
+  }, (err) => {
+    console.error("Room listener error:", err);
+    els.lobbyStatus.textContent = "Connection error: " + err.message;
   });
 }
 
@@ -264,11 +277,9 @@ function enterGame(data) {
   showScreen("game");
   els.roomLabel.textContent = roomCode;
 
-  // Assign roles if not yet assigned
   if (!data.drawerId) {
-    // First player who joined becomes drawer, or random
     const playerIds = Object.keys(data.players || {});
-    const drawer = playerIds[0]; // simple: creator draws first
+    const drawer = playerIds[0];
     roomRef.update({
       drawerId: drawer,
       status: "ready"
@@ -284,16 +295,13 @@ function updateGameFromData(data) {
 
   isDrawer = data.drawerId === playerId;
 
-  // Role badge
   els.roleBadge.textContent = isDrawer ? "You draw" : "You watch";
   els.roleBadge.className = "badge " + (isDrawer ? "drawer" : "watcher");
 
-  // Tools only for drawer while drawing
   const canDraw = isDrawer && data.status === "drawing";
   els.drawingTools.style.opacity = canDraw ? "1" : "0.35";
   els.drawingTools.style.pointerEvents = canDraw ? "auto" : "none";
 
-  // Prompt visibility
   if (isDrawer && data.status === "drawing" && data.prompt) {
     els.promptBox.classList.remove("hidden");
     els.promptText.textContent = data.prompt;
@@ -301,7 +309,6 @@ function updateGameFromData(data) {
     els.promptBox.classList.add("hidden");
   }
 
-  // Reveal
   if (data.status === "reveal") {
     els.revealBox.classList.remove("hidden");
     els.revealText.textContent = data.prompt || "?";
@@ -309,12 +316,9 @@ function updateGameFromData(data) {
     els.revealBox.classList.add("hidden");
   }
 
-  // Buttons
   els.btnStartRound.classList.toggle("hidden", !(data.status === "ready" || data.status === "reveal"));
   els.btnSwap.classList.toggle("hidden", data.status !== "reveal");
 
-  // Only the non-drawer (or either) can start? Let's let either start the next round.
-  // Timer
   if (data.status === "drawing" && data.timerEnd) {
     startLocalTimer(data.timerEnd);
   } else {
@@ -323,7 +327,6 @@ function updateGameFromData(data) {
     els.timer.classList.remove("warning");
   }
 
-  // Strokes listener
   if (!strokesRef) {
     strokesRef = roomRef.child("strokes");
     strokesRef.on("child_added", (s) => {
@@ -340,7 +343,6 @@ function updateGameFromData(data) {
       }
     });
 
-    // Also listen for clear
     roomRef.child("clearAt").on("value", (s) => {
       if (s.val()) clearLocalCanvas();
     });
@@ -355,7 +357,6 @@ function startLocalTimer(endTs) {
     els.timer.classList.toggle("warning", left <= 10);
     if (left <= 0) {
       stopLocalTimer();
-      // Drawer can trigger reveal, but both will see via listener
       if (isDrawer) {
         roomRef.update({ status: "reveal" });
       }
@@ -378,38 +379,46 @@ function stopLocalTimer() {
 async function startRound() {
   if (!roomRef) return;
 
-  clearLocalCanvas();
-  await roomRef.child("strokes").remove();
-  await roomRef.child("clearAt").set(Date.now());
+  try {
+    clearLocalCanvas();
+    await roomRef.child("strokes").remove();
+    await roomRef.child("clearAt").set(Date.now());
 
-  const prompt = randomPrompt();
-  const timerEnd = Date.now() + ROUND_SECONDS * 1000;
+    const prompt = randomPrompt();
+    const timerEnd = Date.now() + ROUND_SECONDS * 1000;
 
-  await roomRef.update({
-    status: "drawing",
-    prompt: prompt,
-    timerEnd: timerEnd
-  });
+    await roomRef.update({
+      status: "drawing",
+      prompt: prompt,
+      timerEnd: timerEnd
+    });
+  } catch (err) {
+    console.error("Start round failed:", err);
+  }
 }
 
 async function swapRoles() {
   if (!roomRef) return;
-  const snap = await roomRef.once("value");
-  const data = snap.val();
-  if (!data) return;
+  try {
+    const snap = await roomRef.once("value");
+    const data = snap.val();
+    if (!data) return;
 
-  const playerIds = Object.keys(data.players || {});
-  const other = playerIds.find(id => id !== data.drawerId) || playerIds[0];
+    const playerIds = Object.keys(data.players || {});
+    const other = playerIds.find(id => id !== data.drawerId) || playerIds[0];
 
-  clearLocalCanvas();
-  await roomRef.child("strokes").remove();
+    clearLocalCanvas();
+    await roomRef.child("strokes").remove();
 
-  await roomRef.update({
-    drawerId: other,
-    status: "ready",
-    prompt: null,
-    timerEnd: null
-  });
+    await roomRef.update({
+      drawerId: other,
+      status: "ready",
+      prompt: null,
+      timerEnd: null
+    });
+  } catch (err) {
+    console.error("Swap failed:", err);
+  }
 }
 
 function leaveRoom() {
@@ -417,7 +426,7 @@ function leaveRoom() {
   if (roomRef) {
     roomRef.off();
     if (strokesRef) strokesRef.off();
-    roomRef.child("players/" + playerId).remove();
+    roomRef.child("players/" + playerId).remove().catch(() => {});
   }
   roomRef = null;
   strokesRef = null;
@@ -425,6 +434,7 @@ function leaveRoom() {
   isDrawer = false;
   showScreen("lobby");
   els.lobbyStatus.textContent = "";
+  els.lobbyStatus.style.color = "";
   els.joinCode.value = "";
 }
 
@@ -435,12 +445,10 @@ function setupCanvas() {
   resizeCanvas();
   window.addEventListener("resize", resizeCanvas);
 
-  // Mouse
   els.canvas.addEventListener("mousedown", onPointerDown);
   els.canvas.addEventListener("mousemove", onPointerMove);
   window.addEventListener("mouseup", onPointerUp);
 
-  // Touch
   els.canvas.addEventListener("touchstart", onPointerDown, { passive: false });
   els.canvas.addEventListener("touchmove", onPointerMove, { passive: false });
   els.canvas.addEventListener("touchend", onPointerUp);
@@ -449,7 +457,6 @@ function setupCanvas() {
 
 function onPointerDown(e) {
   if (!isDrawer) return;
-  // Check current status via a quick flag — we rely on tools being disabled
   e.preventDefault();
   isDrawing = true;
   const pos = getPos(e);
@@ -457,7 +464,6 @@ function onPointerDown(e) {
   lastY = pos.y;
 
   currentStrokeId = "s_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6);
-  // Start the stroke in Firebase
   if (roomRef) {
     roomRef.child("strokes/" + currentStrokeId).set({
       color: els.colorPicker.value,
@@ -472,10 +478,8 @@ function onPointerMove(e) {
   e.preventDefault();
   const pos = getPos(e);
 
-  // Local draw for immediate feedback
   drawLine(lastX, lastY, pos.x, pos.y, els.colorPicker.value, Number(els.brushSize.value));
 
-  // Push point to Firebase
   if (roomRef && currentStrokeId) {
     roomRef.child("strokes/" + currentStrokeId + "/points").push({
       x: Math.round(pos.x),
@@ -487,13 +491,11 @@ function onPointerMove(e) {
   lastY = pos.y;
 }
 
-function onPointerUp(e) {
-  if (!isDrawing) return;
+function onPointerUp() {
   isDrawing = false;
   currentStrokeId = null;
 }
 
-// Clear button
 els.btnClear.addEventListener("click", async () => {
   if (!isDrawer || !roomRef) return;
   clearLocalCanvas();
@@ -514,7 +516,6 @@ els.btnLeaveGame.addEventListener("click", leaveRoom);
 els.btnStartRound.addEventListener("click", startRound);
 els.btnSwap.addEventListener("click", swapRoles);
 
-// Auto uppercase the join code
 els.joinCode.addEventListener("input", () => {
   els.joinCode.value = els.joinCode.value.toUpperCase();
 });

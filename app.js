@@ -4,7 +4,7 @@
 const firebaseConfig = {
   apiKey: "AIzaSyB19tVRkcTjgjHbsOa49LjPBmwRqoR65Vo",
   authDomain: "date-night-eb68a.firebaseapp.com",
-  databaseURL: "https://date-night-eb68a-default-rtdb.firebaseio.com", // <-- CHANGE THIS if needed
+  databaseURL: "https://date-night-eb68a-default-rtdb.firebaseio.com", // IMPORTANT: change this if Firebase shows a different URL
   projectId: "date-night-eb68a",
   storageBucket: "date-night-eb68a.firebasestorage.app",
   messagingSenderId: "1002805026528",
@@ -14,6 +14,12 @@ const firebaseConfig = {
 
 firebase.initializeApp(firebaseConfig);
 const db = firebase.database();
+
+// Quick connection test on load
+console.log("Firebase initialized. Testing database connection...");
+db.ref(".info/connected").on("value", (snap) => {
+  console.log("Firebase connected:", snap.val());
+});
 
 // ======================
 // Game State
@@ -34,7 +40,6 @@ let lastX = 0, lastY = 0;
 let timerInterval = null;
 let ctx = null;
 
-// Fun visual prompts
 const PROMPTS = [
   "a big heart",
   "two people holding hands",
@@ -169,27 +174,43 @@ function clearLocalCanvas() {
   ctx.clearRect(0, 0, els.canvas.width / dpr, els.canvas.height / dpr);
 }
 
+// Helper: add timeout to any promise
+function withTimeout(promise, ms, errorMsg) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(errorMsg)), ms)
+    )
+  ]);
+}
+
 // ======================
 // Room logic
 // ======================
 async function createRoom() {
-  els.lobbyStatus.textContent = "Creating room…";
+  els.lobbyStatus.textContent = "Creating room… (connecting to Firebase)";
   els.lobbyStatus.style.color = "";
+  els.btnCreate.disabled = true;
 
   try {
     roomCode = generateRoomCode();
     roomRef = db.ref("rooms/" + roomCode);
 
-    await roomRef.set({
-      createdAt: Date.now(),
-      players: {
-        [playerId]: { joinedAt: Date.now(), role: null }
-      },
-      status: "waiting",
-      prompt: null,
-      drawerId: null,
-      timerEnd: null
-    });
+    // 8 second timeout so it doesn't hang forever
+    await withTimeout(
+      roomRef.set({
+        createdAt: Date.now(),
+        players: {
+          [playerId]: { joinedAt: Date.now(), role: null }
+        },
+        status: "waiting",
+        prompt: null,
+        drawerId: null,
+        timerEnd: null
+      }),
+      8000,
+      "Timed out. Firebase is not responding. Check databaseURL and that Realtime Database exists."
+    );
 
     els.roomCodeDisplay.textContent = roomCode;
     showScreen("waiting");
@@ -197,7 +218,10 @@ async function createRoom() {
   } catch (err) {
     console.error("Create room failed:", err);
     els.lobbyStatus.style.color = "#e57373";
-    els.lobbyStatus.textContent = "Error: " + (err.message || err.code || "Could not create room. Check console (F12).");
+    els.lobbyStatus.innerHTML = "<strong>Error:</strong> " + (err.message || err.code || "Unknown error") +
+      "<br><small>Open Console (F12) for more details</small>";
+  } finally {
+    els.btnCreate.disabled = false;
   }
 }
 
@@ -208,16 +232,22 @@ async function joinRoom() {
     return;
   }
 
-  els.lobbyStatus.textContent = "Joining…";
+  els.lobbyStatus.textContent = "Joining… (connecting to Firebase)";
   els.lobbyStatus.style.color = "";
+  els.btnJoin.disabled = true;
 
   try {
     roomCode = code;
     roomRef = db.ref("rooms/" + roomCode);
 
-    const snap = await roomRef.once("value");
+    const snap = await withTimeout(
+      roomRef.once("value"),
+      8000,
+      "Timed out while trying to join. Check your databaseURL."
+    );
+
     if (!snap.exists()) {
-      els.lobbyStatus.textContent = "Room not found";
+      els.lobbyStatus.textContent = "Room not found. Check the code.";
       return;
     }
 
@@ -239,7 +269,9 @@ async function joinRoom() {
   } catch (err) {
     console.error("Join room failed:", err);
     els.lobbyStatus.style.color = "#e57373";
-    els.lobbyStatus.textContent = "Error: " + (err.message || err.code || "Could not join room");
+    els.lobbyStatus.innerHTML = "<strong>Error:</strong> " + (err.message || err.code || "Unknown error");
+  } finally {
+    els.btnJoin.disabled = false;
   }
 }
 
@@ -269,7 +301,6 @@ function listenToRoom() {
     }
   }, (err) => {
     console.error("Room listener error:", err);
-    els.lobbyStatus.textContent = "Connection error: " + err.message;
   });
 }
 
@@ -373,12 +404,8 @@ function stopLocalTimer() {
   }
 }
 
-// ======================
-// Round controls
-// ======================
 async function startRound() {
   if (!roomRef) return;
-
   try {
     clearLocalCanvas();
     await roomRef.child("strokes").remove();

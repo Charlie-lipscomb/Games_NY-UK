@@ -4,7 +4,7 @@
 const firebaseConfig = {
   apiKey: "AIzaSyB19tVRkcTjgjHbsOa49LjPBmwRqoR65Vo",
   authDomain: "date-night-eb68a.firebaseapp.com",
-  databaseURL: "https://date-night-eb68a-default-rtdb.firebaseio.com", // IMPORTANT: change this if Firebase shows a different URL
+  databaseURL: "https://date-night-eb68a-default-rtdb.europe-west1.firebasedatabase.app",
   projectId: "date-night-eb68a",
   storageBucket: "date-night-eb68a.firebasestorage.app",
   messagingSenderId: "1002805026528",
@@ -174,7 +174,6 @@ function clearLocalCanvas() {
   ctx.clearRect(0, 0, els.canvas.width / dpr, els.canvas.height / dpr);
 }
 
-// Helper: add timeout to any promise
 function withTimeout(promise, ms, errorMsg) {
   return Promise.race([
     promise,
@@ -188,7 +187,7 @@ function withTimeout(promise, ms, errorMsg) {
 // Room logic
 // ======================
 async function createRoom() {
-  els.lobbyStatus.textContent = "Creating room… (connecting to Firebase)";
+  els.lobbyStatus.textContent = "Creating room…";
   els.lobbyStatus.style.color = "";
   els.btnCreate.disabled = true;
 
@@ -196,7 +195,6 @@ async function createRoom() {
     roomCode = generateRoomCode();
     roomRef = db.ref("rooms/" + roomCode);
 
-    // 8 second timeout so it doesn't hang forever
     await withTimeout(
       roomRef.set({
         createdAt: Date.now(),
@@ -209,7 +207,7 @@ async function createRoom() {
         timerEnd: null
       }),
       8000,
-      "Timed out. Firebase is not responding. Check databaseURL and that Realtime Database exists."
+      "Timed out. Check that Realtime Database rules allow writes."
     );
 
     els.roomCodeDisplay.textContent = roomCode;
@@ -232,7 +230,7 @@ async function joinRoom() {
     return;
   }
 
-  els.lobbyStatus.textContent = "Joining… (connecting to Firebase)";
+  els.lobbyStatus.textContent = "Joining…";
   els.lobbyStatus.style.color = "";
   els.btnJoin.disabled = true;
 
@@ -243,7 +241,7 @@ async function joinRoom() {
     const snap = await withTimeout(
       roomRef.once("value"),
       8000,
-      "Timed out while trying to join. Check your databaseURL."
+      "Timed out while trying to join."
     );
 
     if (!snap.exists()) {

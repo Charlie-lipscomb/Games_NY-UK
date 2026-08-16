@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Date Night Draw — NY ↔ UK</title>
+  <link rel="stylesheet" href="style.css" />
+  <!-- Firebase SDK -->
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database-compat.js"></script>
+</head>
+<body>
+  <div id="app">
+    <!-- Landing / Lobby -->
+    <section id="lobby" class="screen">
+      <div class="card">
+        <h1>Date Night Draw</h1>
+        <p class="subtitle">NY ↔ Hertford</p>
+
+        <div class="lobby-actions">
+          <button id="btn-create" class="primary">Create Room</button>
+
+          <div class="divider">or</div>
+
+          <div class="join-row">
+            <input id="join-code" type="text" placeholder="Enter code" maxlength="6" autocomplete="off" />
+            <button id="btn-join" class="primary">Join</button>
+          </div>
+        </div>
+
+        <p id="lobby-status" class="status"></p>
+      </div>
+    </section>
+
+    <!-- Waiting for partner -->
+    <section id="waiting" class="screen hidden">
+      <div class="card">
+        <h2>Room Code</h2>
+        <div id="room-code-display" class="room-code"></div>
+        <p>Share this code with your partner</p>
+        <p id="waiting-status" class="status">Waiting for someone to join…</p>
+        <button id="btn-leave-waiting" class="secondary">Leave</button>
+      </div>
+    </section>
+
+    <!-- Game screen -->
+    <section id="game" class="screen hidden">
+      <header class="game-header">
+        <div class="left">
+          <span id="role-badge" class="badge"></span>
+          <span id="timer" class="timer">--</span>
+        </div>
+        <div class="right">
+          <span id="room-label" class="room-label"></span>
+        </div>
+      </header>
+
+      <div id="prompt-box" class="prompt-box hidden">
+        <span class="prompt-label">Draw this:</span>
+        <span id="prompt-text"></span>
+      </div>
+
+      <div id="reveal-box" class="reveal-box hidden">
+        <p>The prompt was:</p>
+        <h2 id="reveal-text"></h2>
+      </div>
+
+      <div class="canvas-wrapper">
+        <canvas id="draw-canvas"></canvas>
+      </div>
+
+      <div class="toolbar">
+        <div class="tools" id="drawing-tools">
+          <input type="color" id="color-picker" value="#e91e63" />
+          <input type="range" id="brush-size" min="2" max="24" value="6" />
+          <button id="btn-clear" class="tool-btn" title="Clear">Clear</button>
+        </div>
+
+        <div class="actions">
+          <button id="btn-start-round" class="primary hidden">Start Round</button>
+          <button id="btn-swap" class="primary hidden">Swap & New Round</button>
+          <button id="btn-leave-game" class="secondary">Leave</button>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

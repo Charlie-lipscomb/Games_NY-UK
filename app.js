@@ -15,8 +15,7 @@ const firebaseConfig = {
 firebase.initializeApp(firebaseConfig);
 const db = firebase.database();
 
-// Quick connection test on load
-console.log("Firebase initialized. Testing database connection...");
+console.log("Firebase initialized");
 db.ref(".info/connected").on("value", (snap) => {
   console.log("Firebase connected:", snap.val());
 });
@@ -33,12 +32,15 @@ if (!playerId) {
 let roomCode = null;
 let isDrawer = false;
 let roomRef = null;
-let strokesRef = null;
-let currentStrokeId = null;
 let isDrawing = false;
 let lastX = 0, lastY = 0;
 let timerInterval = null;
 let ctx = null;
+let currentPoints = [];          // points of the stroke currently being drawn
+let finishedStrokes = [];        // local cache of completed strokes for redrawing
+let liveStrokeListener = null;
+let strokesListener = null;
+let clearListener = null;
 
 const PROMPTS = [
   "a big heart",
@@ -140,6 +142,9 @@ function resizeCanvas() {
   ctx.scale(dpr, dpr);
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
+
+  // Redraw everything after resize
+  redrawAll();
 }
 
 function getPos(e) {
@@ -158,13 +163,15 @@ function getPos(e) {
   };
 }
 
-function drawLine(x0, y0, x1, y1, color, width) {
-  if (!ctx) return;
-  ctx.strokeStyle = color;
-  ctx.lineWidth = width;
+function drawStroke(points, color, width) {
+  if (!ctx || !points || points.length < 2) return;
+  ctx.strokeStyle = color || "#e91e63";
+  ctx.lineWidth = width || 6;
   ctx.beginPath();
-  ctx.moveTo(x0, y0);
-  ctx.lineTo(x1, y1);
+  ctx.moveTo(points[0].x, points[0].y);
+  for (let i = 1; i < points.length; i++) {
+    ctx.lineTo(points[i].x, points[i].y);
+  }
   ctx.stroke();
 }
 
@@ -172,6 +179,14 @@ function clearLocalCanvas() {
   if (!ctx) return;
   const dpr = window.devicePixelRatio || 1;
   ctx.clearRect(0, 0, els.canvas.width / dpr, els.canvas.height / dpr);
+}
+
+function redrawAll() {
+  clearLocalCanvas();
+  // Draw all finished strokes
+  finishedStrokes.forEach(s => {
+    drawStroke(s.points, s.color, s.width);
+  });
 }
 
 function withTimeout(promise, ms, errorMsg) {
@@ -199,7 +214,7 @@ async function createRoom() {
       roomRef.set({
         createdAt: Date.now(),
         players: {
-          [playerId]: { joinedAt: Date.now(), role: null }
+          [playerId]: { joinedAt: Date.now() }
         },
         status: "waiting",
         prompt: null,
@@ -207,7 +222,7 @@ async function createRoom() {
         timerEnd: null
       }),
       8000,
-      "Timed out. Check that Realtime Database rules allow writes."
+      "Timed out. Check database rules."
     );
 
     els.roomCodeDisplay.textContent = roomCode;
@@ -216,8 +231,7 @@ async function createRoom() {
   } catch (err) {
     console.error("Create room failed:", err);
     els.lobbyStatus.style.color = "#e57373";
-    els.lobbyStatus.innerHTML = "<strong>Error:</strong> " + (err.message || err.code || "Unknown error") +
-      "<br><small>Open Console (F12) for more details</small>";
+    els.lobbyStatus.innerHTML = "<strong>Error:</strong> " + (err.message || err.code);
   } finally {
     els.btnCreate.disabled = false;
   }
@@ -238,14 +252,10 @@ async function joinRoom() {
     roomCode = code;
     roomRef = db.ref("rooms/" + roomCode);
 
-    const snap = await withTimeout(
-      roomRef.once("value"),
-      8000,
-      "Timed out while trying to join."
-    );
+    const snap = await withTimeout(roomRef.once("value"), 8000, "Timed out");
 
     if (!snap.exists()) {
-      els.lobbyStatus.textContent = "Room not found. Check the code.";
+      els.lobbyStatus.textContent = "Room not found";
       return;
     }
 
@@ -256,18 +266,15 @@ async function joinRoom() {
       return;
     }
 
-    await roomRef.child("players/" + playerId).set({
-      joinedAt: Date.now(),
-      role: null
-    });
+    await roomRef.child("players/" + playerId).set({ joinedAt: Date.now() });
 
     showScreen("waiting");
     els.roomCodeDisplay.textContent = roomCode;
     listenToRoom();
   } catch (err) {
-    console.error("Join room failed:", err);
+    console.error("Join failed:", err);
     els.lobbyStatus.style.color = "#e57373";
-    els.lobbyStatus.innerHTML = "<strong>Error:</strong> " + (err.message || err.code || "Unknown error");
+    els.lobbyStatus.innerHTML = "<strong>Error:</strong> " + (err.message || err.code);
   } finally {
     els.btnJoin.disabled = false;
   }
@@ -290,15 +297,13 @@ function listenToRoom() {
     if (!screens.waiting.classList.contains("hidden")) {
       if (bothJoined) {
         els.waitingStatus.textContent = "Both connected! Starting…";
-        setTimeout(() => enterGame(data), 600);
+        setTimeout(() => enterGame(data), 500);
       } else {
         els.waitingStatus.textContent = "Waiting for someone to join…";
       }
     } else {
       updateGameFromData(data);
     }
-  }, (err) => {
-    console.error("Room listener error:", err);
   });
 }
 
@@ -308,14 +313,14 @@ function enterGame(data) {
 
   if (!data.drawerId) {
     const playerIds = Object.keys(data.players || {});
-    const drawer = playerIds[0];
     roomRef.update({
-      drawerId: drawer,
+      drawerId: playerIds[0],
       status: "ready"
     });
   }
 
   setupCanvas();
+  setupDrawingListeners();
   updateGameFromData(data);
 }
 
@@ -328,7 +333,7 @@ function updateGameFromData(data) {
   els.roleBadge.className = "badge " + (isDrawer ? "drawer" : "watcher");
 
   const canDraw = isDrawer && data.status === "drawing";
-  els.drawingTools.style.opacity = canDraw ? "1" : "0.35";
+  els.drawingTools.style.opacity = canDraw ? "1" : "0.4";
   els.drawingTools.style.pointerEvents = canDraw ? "auto" : "none";
 
   if (isDrawer && data.status === "drawing" && data.prompt) {
@@ -354,27 +359,6 @@ function updateGameFromData(data) {
     stopLocalTimer();
     els.timer.textContent = data.status === "ready" ? "Ready" : "--";
     els.timer.classList.remove("warning");
-  }
-
-  if (!strokesRef) {
-    strokesRef = roomRef.child("strokes");
-    strokesRef.on("child_added", (s) => {
-      const stroke = s.val();
-      if (stroke && stroke.points && stroke.points.length > 1) {
-        for (let i = 1; i < stroke.points.length; i++) {
-          drawLine(
-            stroke.points[i - 1].x, stroke.points[i - 1].y,
-            stroke.points[i].x, stroke.points[i].y,
-            stroke.color || "#e91e63",
-            stroke.width || 6
-          );
-        }
-      }
-    });
-
-    roomRef.child("clearAt").on("value", (s) => {
-      if (s.val()) clearLocalCanvas();
-    });
   }
 }
 
@@ -402,11 +386,56 @@ function stopLocalTimer() {
   }
 }
 
+// ======================
+// Drawing listeners (the important fix)
+// ======================
+function setupDrawingListeners() {
+  if (!roomRef) return;
+
+  // Clean previous listeners
+  if (liveStrokeListener) roomRef.child("liveStroke").off("value", liveStrokeListener);
+  if (strokesListener) roomRef.child("strokes").off("child_added", strokesListener);
+  if (clearListener) roomRef.child("clearAt").off("value", clearListener);
+
+  // 1. Live stroke (appears in real-time while the other person is drawing)
+  liveStrokeListener = roomRef.child("liveStroke").on("value", (snap) => {
+    const live = snap.val();
+    redrawAll(); // clear + draw finished strokes
+
+    if (live && live.points && live.points.length > 1) {
+      drawStroke(live.points, live.color, live.width);
+    }
+  });
+
+  // 2. Finished strokes
+  finishedStrokes = [];
+  strokesListener = roomRef.child("strokes").on("child_added", (snap) => {
+    const stroke = snap.val();
+    if (stroke && stroke.points) {
+      finishedStrokes.push(stroke);
+      redrawAll();
+    }
+  });
+
+  // 3. Clear signal
+  clearListener = roomRef.child("clearAt").on("value", (snap) => {
+    if (snap.val()) {
+      finishedStrokes = [];
+      clearLocalCanvas();
+    }
+  });
+}
+
+// ======================
+// Round controls
+// ======================
 async function startRound() {
   if (!roomRef) return;
   try {
+    finishedStrokes = [];
     clearLocalCanvas();
     await roomRef.child("strokes").remove();
+    await roomRef.child("liveStroke").remove();
     await roomRef.child("clearAt").set(Date.now());
 
     const prompt = randomPrompt();
@@ -432,8 +461,10 @@ async function swapRoles() {
     const playerIds = Object.keys(data.players || {});
     const other = playerIds.find(id => id !== data.drawerId) || playerIds[0];
 
+    finishedStrokes = [];
     clearLocalCanvas();
     await roomRef.child("strokes").remove();
+    await roomRef.child("liveStroke").remove();
 
     await roomRef.update({
       drawerId: other,
@@ -450,13 +481,12 @@ function leaveRoom() {
   stopLocalTimer();
   if (roomRef) {
     roomRef.off();
-    if (strokesRef) strokesRef.off();
     roomRef.child("players/" + playerId).remove().catch(() => {});
   }
   roomRef = null;
-  strokesRef = null;
   roomCode = null;
   isDrawer = false;
+  finishedStrokes = [];
   showScreen("lobby");
   els.lobbyStatus.textContent = "";
   els.lobbyStatus.style.color = "";
@@ -464,67 +494,92 @@ function leaveRoom() {
 }
 
 // ======================
-// Drawing
+// Drawing input
 // ======================
 function setupCanvas() {
   resizeCanvas();
   window.addEventListener("resize", resizeCanvas);
 
-  els.canvas.addEventListener("mousedown", onPointerDown);
-  els.canvas.addEventListener("mousemove", onPointerMove);
-  window.addEventListener("mouseup", onPointerUp);
+  // Prevent adding listeners multiple times
+  els.canvas.onmousedown = onPointerDown;
+  els.canvas.onmousemove = onPointerMove;
+  window.onmouseup = onPointerUp;
 
-  els.canvas.addEventListener("touchstart", onPointerDown, { passive: false });
-  els.canvas.addEventListener("touchmove", onPointerMove, { passive: false });
-  els.canvas.addEventListener("touchend", onPointerUp);
-  els.canvas.addEventListener("touchcancel", onPointerUp);
+  els.canvas.ontouchstart = (e) => { e.preventDefault(); onPointerDown(e); };
+  els.canvas.ontouchmove = (e) => { e.preventDefault(); onPointerMove(e); };
+  els.canvas.ontouchend = onPointerUp;
+  els.canvas.ontouchcancel = onPointerUp;
 }
 
 function onPointerDown(e) {
   if (!isDrawer) return;
-  e.preventDefault();
+  // Only allow drawing during "drawing" status
+  // (tools are already disabled, but extra safety)
+
   isDrawing = true;
   const pos = getPos(e);
   lastX = pos.x;
   lastY = pos.y;
+  currentPoints = [{ x: Math.round(pos.x), y: Math.round(pos.y) }];
 
-  currentStrokeId = "s_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6);
+  // Start live stroke
   if (roomRef) {
-    roomRef.child("strokes/" + currentStrokeId).set({
+    roomRef.child("liveStroke").set({
       color: els.colorPicker.value,
       width: Number(els.brushSize.value),
-      points: [{ x: pos.x, y: pos.y }]
+      points: currentPoints
     });
   }
 }
 
 function onPointerMove(e) {
   if (!isDrawing || !isDrawer) return;
-  e.preventDefault();
+
   const pos = getPos(e);
+  const x = Math.round(pos.x);
+  const y = Math.round(pos.y);
 
-  drawLine(lastX, lastY, pos.x, pos.y, els.colorPicker.value, Number(els.brushSize.value));
+  // Draw locally immediately
+  drawStroke([ {x: lastX, y: lastY}, {x, y} ], els.colorPicker.value, Number(els.brushSize.value));
 
-  if (roomRef && currentStrokeId) {
-    roomRef.child("strokes/" + currentStrokeId + "/points").push({
-      x: Math.round(pos.x),
-      y: Math.round(pos.y)
+  currentPoints.push({ x, y });
+  lastX = x;
+  lastY = y;
+
+  // Throttle Firebase writes a little (every 2-3 points is enough for smooth feel)
+  if (currentPoints.length % 2 === 0 && roomRef) {
+    roomRef.child("liveStroke").update({
+      points: currentPoints
     });
   }
-
-  lastX = pos.x;
-  lastY = pos.y;
 }
 
 function onPointerUp() {
+  if (!isDrawing) return;
   isDrawing = false;
-  currentStrokeId = null;
+
+  if (currentPoints.length > 1 && roomRef) {
+    // Save finished stroke
+    const strokeId = "s_" + Date.now();
+    roomRef.child("strokes/" + strokeId).set({
+      color: els.colorPicker.value,
+      width: Number(els.brushSize.value),
+      points: currentPoints
+    });
+
+    // Clear the live stroke
+    roomRef.child("liveStroke").remove();
+  }
+
+  currentPoints = [];
 }
 
 els.btnClear.addEventListener("click", async () => {
   if (!isDrawer || !roomRef) return;
+  finishedStrokes = [];
   clearLocalCanvas();
   await roomRef.child("strokes").remove();
+  await roomRef.child("liveStroke").remove();
   await roomRef.child("clearAt").set(Date.now());
 });
 
